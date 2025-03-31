@@ -5487,6 +5487,167 @@ class CANDO(object):
             return 'CANDO: {0} compounds, {1} indications\n' \
                    '\tIndication mapping - {2}'.format(nc, ni, self.i_map)
 
+    # Updated CANDO-integrated selectivity scoring with disease/pathway enrichment, error handling, filtering, and plotting
+    def compute_selectivity(self, other_cando, method='difference', top_n=10, epsilon=1e-6,
+                            export_file='', show_plot=True, min_A=None, max_B=None,
+                            interactive=False, proteins=None, pathways=None,
+                            disease_mesh_ids=None):
+        """
+        Compare this CANDO object (target) to another (off-target) and rank compounds by selectivity.
+
+        Parameters:
+        - method: 'difference' or 'ratio' to compute selectivity
+        - export_file: save results as TSV if path is provided
+        - show_plot: display a static or interactive plot
+        - min_A: filter compounds with mean_A >= this value
+        - max_B: filter compounds with mean_B <= this value
+        - interactive: use hover-enabled scatter plot (requires mplcursors)
+        - proteins: optional list of protein IDs to subset the signatures
+        - pathways: optional list of pathway IDs (will use associated proteins)
+        - disease_mesh_ids: restrict analysis to compounds associated with these MeSH IDs
+
+        Returns:
+        - Top selective compounds as a sorted DataFrame
+        """
+        print("\n[Selectivity] Starting selectivity scoring...")
+
+        # Validate matrices and compound alignment
+        try:
+            A = np.array([c.sig for c in self.compounds]).T  # [proteins x compounds]
+            B = np.array([c.sig for c in other_cando.compounds]).T
+        except Exception as e:
+            print(f"[Error] Could not extract compound signatures: {e}")
+            return
+
+        if A.shape[1] != B.shape[1]:
+            print("[Error] Number of compounds does not match between datasets.")
+            return
+
+        # Pathway-based protein filtering
+        if pathways:
+            proteins = []
+            for pid in pathways:
+                try:
+                    pw = self.get_pathway(pid)
+                    proteins.extend([p.id_ for p in pw.proteins])
+                except Exception as e:
+                    print(f"[Warning] Pathway {pid} not found or error occurred: {e}")
+
+        # Validate protein IDs and extract indices
+        if proteins:
+            indices = [self.protein_id_to_index[p] for p in proteins if p in self.protein_id_to_index]
+            if not indices:
+                print("[Warning] No matching protein indices found. Skipping selectivity.")
+                return
+            A = A[indices, :]
+            B = B[indices, :]
+
+        # Calculate selectivity scores
+        try:
+            if method == 'difference':
+                scores = np.mean(A, axis=0) - np.mean(B, axis=0)
+            elif method == 'ratio':
+                scores = np.mean(A, axis=0) / (np.mean(B, axis=0) + epsilon)
+            else:
+                print("[Error] Unsupported scoring method. Use 'difference' or 'ratio'.")
+                return
+        except Exception as e:
+            print(f"[Error] Problem computing selectivity scores: {e}")
+            return
+
+        # Build result DataFrame
+        data = []
+        for i, c in enumerate(self.compounds):
+            mean_A = np.mean(A[:, i])
+            mean_B = np.mean(B[:, i])
+            indication_names = ", ".join([ind.name for ind in c.indications])
+            mesh_ids = ", ".join([ind.mesh for ind in c.indications])
+            data.append({
+                'compound_id': c.id_,
+                'compound_name': c.name,
+                'mean_A': mean_A,
+                'mean_B': mean_B,
+                'selectivity_score': scores[i],
+                'indications': indication_names,
+                'indication_mesh_ids': mesh_ids
+            })
+
+        df = pd.DataFrame(data)
+
+        # Filter by indication (disease) if needed
+        if disease_mesh_ids:
+            df = df[df['indication_mesh_ids'].apply(lambda x: any(mid in x for mid in disease_mesh_ids))]
+            if df.empty:
+                print("[Warning] No compounds matched the provided disease MeSH IDs.")
+
+        # Apply threshold filters
+        if min_A is not None:
+            df = df[df['mean_A'] >= min_A]
+        if max_B is not None:
+            df = df[df['mean_B'] <= max_B]
+
+        if df.empty:
+            print("[Warning] No compounds passed filtering criteria.")
+            return
+
+        # Sort by selectivity
+        df = df.sort_values(by='selectivity_score', ascending=False)
+
+        # Display results
+        print("\n[Selectivity] Top compounds:")
+        print(df[['compound_name', 'selectivity_score']].head(top_n))
+
+        # Export to file
+        if export_file:
+            try:
+                df.to_csv(export_file, sep='\t', index=False)
+                print(f"[Selectivity] Results exported to: {export_file}")
+            except Exception as e:
+                print(f"[Error] Could not export results: {e}")
+
+        # Generate plot
+        if show_plot:
+            try:
+                plt.figure(figsize=(8,6))
+                sc = plt.scatter(df['mean_B'], df['mean_A'], c=df['selectivity_score'], cmap='viridis', alpha=0.8)
+                plt.colorbar(sc, label='Selectivity Score')
+                plt.xlabel('Mean interaction in B (off-target)')
+                plt.ylabel('Mean interaction in A (target)')
+                plt.title('Compound Selectivity Plot')
+                plt.grid(True)
+
+                # Enable interactive tooltips
+                if interactive:
+                    try:
+                        import mplcursors
+                        cursor = mplcursors.cursor(hover=True)
+                        @cursor.connect("add")
+                        def on_add(sel):
+                            i = sel.index
+                            sel.annotation.set_text(f"{df.iloc[i]['compound_name']}\nScore: {df.iloc[i]['selectivity_score']:.3f}")
+                    except ImportError:
+                        print("[Note] 'mplcursors' not installed. Run 'pip install mplcursors' for interactivity.")
+
+                plt.tight_layout()
+                plt.show()
+            except Exception as e:
+                print(f"[Error] Could not generate plot: {e}")
+
+        return df.head(top_n)
+
+# Example usage:
+# target.compute_selectivity(
+#     off_target,
+#     method='difference',
+#     top_n=15,
+#     min_A=0.2,
+#     max_B=0.1,
+#     export_file='selectivity_filtered.tsv',
+#     pathways=['PWY001', 'PWY002'],
+#     disease_mesh_ids=['MESH:D012345', 'MESH:C567890'],
+#     interactive=True
+# )
+
 
 class Matrix(object):
     """!
