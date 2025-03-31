@@ -10,6 +10,10 @@ import pandas as pd
 import multiprocessing as mp
 import difflib
 import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
 from decimal import Decimal
 from tqdm import tqdm
 from rdkit import Chem, DataStructs
@@ -7350,3 +7354,4 @@ def ndcg(ranks, thresholds, out_of):
             if rank <= thresholds[i][1]:
                 dcgs[i] += 1/math.log(rank + 1, 2)
     return [x/len(ranks) for x in dcgs]
+
